@@ -4,8 +4,7 @@
 
 extern int yyparse();
 extern FILE *yyin;
-
-ASTNodePtr root;
+extern ASTNodePtr root;
 
 int main(int argc, char **argv) {
   if (argc > 1) {

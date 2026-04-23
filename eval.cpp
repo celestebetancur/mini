@@ -30,9 +30,11 @@ double get_rand(double seed, Fraction time) {
     long long n = time.n;
     long long d = time.d;
     long long s = (long long)(seed * 1000000.0);
-    long long hash = (s * 31337 + n * 1337 + d * 9999 + 1234567) % 2147483647;
-    if (hash < 0) hash += 2147483647;
-    return (double)hash / 2147483647.0;
+    long long hash = (s * 3133711) ^ (n * 133733) ^ (d * 9999991) ^ 123456789LL;
+    hash = (hash ^ (hash >> 16)) * 0x85ebca6bLL;
+    hash = (hash ^ (hash >> 13)) * 0xc2b2ae35LL;
+    hash = (hash ^ (hash >> 16));
+    return (double)(hash & 0x7FFFFFFF) / 2147483647.0;
 }
 
 std::vector<bool> compute_bjorklund(int pulses, int steps) {
