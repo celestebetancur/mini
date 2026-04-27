@@ -74,7 +74,18 @@ double get_amt(const ArgValue& arg) {
 std::vector<Event> eval_node(ASTNodePtr node, Arc arc);
 
 std::vector<Event> eval_atom(std::shared_ptr<AtomStub> atom, Arc arc) {
-    return { { arc, arc, atom->source } };
+    std::vector<Event> res;
+    long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d - 0.000001);
+    long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d + 0.000001);
+    
+    for (long long c = s_cycle; c < e_cycle; ++c) {
+        Arc item_arc { Fraction(c, 1), Fraction(c + 1, 1) };
+        if (item_arc.end > arc.start && item_arc.start < arc.end) {
+             Arc intersect { std::max(item_arc.start, arc.start), std::min(item_arc.end, arc.end) };
+             res.push_back({ intersect, intersect, atom->source });
+        }
+    }
+    return res;
 }
 
 std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, ASTNodePtr source, Arc arc) {
@@ -84,53 +95,45 @@ std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, AST
     if (op.type_ == "stretch") {
         std::string type = op.arguments.at("type").s_val;
         double amount = get_amt(op.arguments.at("amount"));
+        if (amount <= 0.0) amount = 1.0;
         
-        if (type == "fast") {
-            std::vector<Event> res;
-            Fraction step = (arc.end - arc.start) / Fraction((long long)std::round(amount), 1);
-            for (int i = 0; i < (int)std::round(amount); ++i) {
-                Arc sub_arc;
-                sub_arc.start = arc.start + step * Fraction(i, 1);
-                sub_arc.end = sub_arc.start + step;
-                auto evs = eval_ops(ops, index + 1, source, sub_arc);
-                res.insert(res.end(), evs.begin(), evs.end());
-            }
-            return res;
-        } else if (type == "slow") {
-            // For 'slow', it expands the arc space it evaluates. 
-            // In a simple fixed-arc evaluate, 'slow x' on 0->1 actually requests 0 -> 1/x from the child.
-            // Let's implement slow by squeezing the child arc into an expanded space.
-            Arc expanded_arc;
-            expanded_arc.start = arc.start / Fraction((long long)std::round(amount), 1);
-            expanded_arc.end = arc.end / Fraction((long long)std::round(amount), 1);
-            
-            // To be accurate we evaluate the expanded and then reshape the returned events back
-            auto evs = eval_ops(ops, index + 1, source, expanded_arc);
-            for (auto& ev : evs) {
-                ev.active.start = ev.active.start * Fraction((long long)std::round(amount), 1);
-                ev.active.end = ev.active.end * Fraction((long long)std::round(amount), 1);
-                ev.part.start = ev.part.start * Fraction((long long)std::round(amount), 1);
-                ev.part.end = ev.part.end * Fraction((long long)std::round(amount), 1);
-            }
-            return evs;
+        Fraction f_amt((long long)std::round(amount * 1000.0), 1000);
+        if (type == "slow") f_amt = Fraction(1, 1) / f_amt;
+        
+        Arc scaled_arc;
+        scaled_arc.start = arc.start * f_amt;
+        scaled_arc.end = arc.end * f_amt;
+        
+        auto evs = eval_ops(ops, index + 1, source, scaled_arc);
+        for (auto& ev : evs) {
+            ev.active.start = ev.active.start / f_amt;
+            ev.active.end = ev.active.end / f_amt;
+            ev.part.start = ev.part.start / f_amt;
+            ev.part.end = ev.part.end / f_amt;
         }
+        return evs;
     } else if (op.type_ == "replicate") {
         double amount = get_amt(op.arguments.at("amount"));
-        std::vector<Event> res;
         int rep = (int)std::round(amount);
         if (rep <= 0) rep = 1;
-        Fraction step = (arc.end - arc.start) / Fraction(rep, 1);
-        for (int i = 0; i < rep; ++i) {
-            Arc sub_arc;
-            sub_arc.start = arc.start + step * Fraction(i, 1);
-            sub_arc.end = sub_arc.start + step;
-            auto evs = eval_ops(ops, index + 1, source, sub_arc);
-            res.insert(res.end(), evs.begin(), evs.end());
+        Fraction f_amt(rep, 1);
+        
+        Arc scaled_arc;
+        scaled_arc.start = arc.start * f_amt;
+        scaled_arc.end = arc.end * f_amt;
+        
+        auto evs = eval_ops(ops, index + 1, source, scaled_arc);
+        for (auto& ev : evs) {
+            ev.active.start = ev.active.start / f_amt;
+            ev.active.end = ev.active.end / f_amt;
+            ev.part.start = ev.part.start / f_amt;
+            ev.part.end = ev.part.end / f_amt;
         }
-        return res;
+        return evs;
     } else if (op.type_ == "bjorklund") {
         int pulses = (int)std::round(get_amt(op.arguments.at("pulse")));
         int steps = (int)std::round(get_amt(op.arguments.at("step")));
+        if (steps <= 0) steps = 1;
         int rotation = 0;
         if (op.arguments.count("rotation")) {
             rotation = (int)std::round(get_amt(op.arguments.at("rotation")));
@@ -138,16 +141,23 @@ std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, AST
         
         std::vector<bool> b_pattern = compute_bjorklund(pulses, steps);
         std::vector<Event> res;
-        Fraction step_size = (arc.end - arc.start) / Fraction(steps, 1);
         
-        for (int i = 0; i < steps; ++i) {
-            int shifted_i = (i + steps - (rotation % steps)) % steps;
-            if (b_pattern[shifted_i]) {
-                Arc sub_arc;
-                sub_arc.start = arc.start + step_size * Fraction(i, 1);
-                sub_arc.end = sub_arc.start + step_size;
-                auto evs = eval_ops(ops, index + 1, source, sub_arc);
-                res.insert(res.end(), evs.begin(), evs.end());
+        long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d - 0.000001);
+        long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d + 0.000001);
+        
+        for (long long c = s_cycle; c < e_cycle; ++c) {
+            for (int i = 0; i < steps; ++i) {
+                int shifted_i = (i + steps - (rotation % steps)) % steps;
+                if (b_pattern[shifted_i]) {
+                    Fraction step_size(1, steps);
+                    Arc item_arc { Fraction(c, 1) + step_size * Fraction(i, 1), 
+                                  Fraction(c, 1) + step_size * Fraction(i + 1, 1) };
+                                  
+                    if (item_arc.end > arc.start && item_arc.start < arc.end) {
+                        auto evs = eval_ops(ops, index + 1, source, item_arc);
+                        res.insert(res.end(), evs.begin(), evs.end());
+                    }
+                }
             }
         }
         return res;
@@ -170,14 +180,17 @@ std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, AST
         auto friend_node = op.arguments.at("element").node_val;
         auto evs = eval_ops(ops, index + 1, source, arc);
         auto friend_evs = eval_node(friend_node, arc);
-        
-        std::string tag = ", ";
+
         if (!friend_evs.empty()) {
-            tag += friend_evs[0].value;
-        }
-        
-        for (auto& ev : evs) {
-            ev.value += tag;
+            const std::string& tail = friend_evs[0].value;
+            // Check if tail is numeric (sample index: bd:3 -> "bd, 3")
+            // or non-numeric (scale/modifier name: c:minor -> "c:minor")
+            bool numeric = !tail.empty() && (std::isdigit((unsigned char)tail[0]) ||
+                           (tail[0] == '-' && tail.size() > 1 && std::isdigit((unsigned char)tail[1])));
+            std::string tag = numeric ? (", " + tail) : (":" + tail);
+            for (auto& ev : evs) {
+                ev.value += tag;
+            }
         }
         return evs;
     } else if (op.type_ == "range") {
@@ -194,20 +207,25 @@ std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, AST
         
         int steps = std::max(1, (int)std::abs(end_val - start_val) + 1);
         std::vector<Event> res;
-        Fraction step_size = (arc.end - arc.start) / Fraction(steps, 1);
         
-        for (int i = 0; i < steps; ++i) {
-            Arc sub_arc;
-            sub_arc.start = arc.start + step_size * Fraction(i, 1);
-            sub_arc.end = sub_arc.start + step_size;
-            
-            double current_val = start_val < end_val ? start_val + i : start_val - i;
-            
-            Event ev;
-            ev.part = sub_arc;
-            ev.active = sub_arc;
-            ev.value = std::to_string((int)current_val); // emit int strings for simplicity
-            res.push_back(ev);
+        long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d - 0.000001);
+        long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d + 0.000001);
+        
+        for (long long c = s_cycle; c < e_cycle; ++c) {
+            Fraction step_size(1, steps);
+            for (int i = 0; i < steps; ++i) {
+                Arc item_arc { Fraction(c, 1) + step_size * Fraction(i, 1), 
+                              Fraction(c, 1) + step_size * Fraction(i + 1, 1) };
+                
+                if (item_arc.end > arc.start && item_arc.start < arc.end) {
+                    double current_val = start_val < end_val ? start_val + i : start_val - i;
+                    Event ev;
+                    ev.part = item_arc;
+                    ev.active = item_arc;
+                    ev.value = std::to_string((int)current_val);
+                    res.push_back(ev);
+                }
+            }
         }
         return res;
     }
@@ -216,19 +234,22 @@ std::vector<Event> eval_ops(const std::vector<Operation>& ops, size_t index, AST
 }
 
 std::vector<Event> eval_element(std::shared_ptr<ElementStub> elem, Arc arc) {
-    if (elem->reps == 1) {
+    if (elem->reps <= 1) {
         return eval_ops(elem->ops, 0, elem->source, arc);
     } else {
-        std::vector<Event> res;
-        Fraction step = (arc.end - arc.start) / Fraction((long long)elem->reps, 1);
-        for (int i = 0; i < elem->reps; ++i) {
-            Arc sub_arc;
-            sub_arc.start = arc.start + step * Fraction(i, 1);
-            sub_arc.end = sub_arc.start + step;
-            auto evs = eval_ops(elem->ops, 0, elem->source, sub_arc);
-            res.insert(res.end(), evs.begin(), evs.end());
+        Fraction f_amt(elem->reps, 1);
+        Arc scaled_arc;
+        scaled_arc.start = arc.start * f_amt;
+        scaled_arc.end = arc.end * f_amt;
+        
+        auto evs = eval_ops(elem->ops, 0, elem->source, scaled_arc);
+        for (auto& ev : evs) {
+            ev.active.start = ev.active.start / f_amt;
+            ev.active.end = ev.active.end / f_amt;
+            ev.part.start = ev.part.start / f_amt;
+            ev.part.end = ev.part.end / f_amt;
         }
-        return res;
+        return evs;
     }
 }
 
@@ -239,49 +260,58 @@ std::vector<Event> eval_pattern(std::shared_ptr<PatternStub> pat, Arc arc) {
         double total_weight = 0;
         for (auto n : pat->list) {
             auto elem = std::dynamic_pointer_cast<ElementStub>(n);
-            if (elem) {
-                total_weight += elem->weight;
-            } else {
-                total_weight += 1.0;
+            total_weight += elem ? elem->weight : 1.0;
+        }
+        if (total_weight <= 0.0) total_weight = 1.0;
+        
+        long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d - 0.000001);
+        long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d + 0.000001);
+        
+        for (long long c = s_cycle; c < e_cycle; ++c) {
+            Fraction current(c, 1);
+            for (auto n : pat->list) {
+                double w = 1.0;
+                auto elem = std::dynamic_pointer_cast<ElementStub>(n);
+                if (elem) w = elem->weight;
+                
+                Fraction step((long long)std::round(w * 1000), (long long)std::round(total_weight * 1000));
+                Arc item_arc { current, current + step };
+                
+                if (item_arc.end > arc.start && item_arc.start < arc.end) {
+                    auto evs = eval_node(n, item_arc);
+                    res.insert(res.end(), evs.begin(), evs.end());
+                }
+                current = current + step;
             }
         }
-        
-        Fraction current = arc.start;
-        Fraction len = arc.end - arc.start;
-        
-        for (auto n : pat->list) {
-            double w = 1.0;
-            auto elem = std::dynamic_pointer_cast<ElementStub>(n);
-            if (elem) w = elem->weight;
-            
-            Fraction start = current;
-            Fraction step = len * Fraction((long long)w, (long long)total_weight);
-            Fraction end = current + step;
-            
-            Arc sub_arc { start, end };
-            auto evs = eval_node(n, sub_arc);
-            res.insert(res.end(), evs.begin(), evs.end());
-            
-            current = end;
-        }
     } else if (pat->alignment == "polymeter_slowcat") {
-        Fraction current = arc.start;
-        Fraction len = arc.end - arc.start;
-        
+        double total_cycles = 0;
         for (auto n : pat->list) {
-            double w = 1.0;
             auto elem = std::dynamic_pointer_cast<ElementStub>(n);
-            if (elem) w = elem->weight;
-            
-            Fraction start = current;
-            Fraction step = len * Fraction((long long)w, 1);
-            Fraction end = current + step;
-            
-            Arc sub_arc { start, end };
-            auto evs = eval_node(n, sub_arc);
-            res.insert(res.end(), evs.begin(), evs.end());
-            
-            current = end;
+            total_cycles += elem ? elem->weight : 1.0;
+        }
+        if (total_cycles <= 0.0) total_cycles = 1.0;
+        long long tc = (long long)std::round(total_cycles);
+
+        long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d / total_cycles - 0.000001);
+        long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d / total_cycles + 0.000001);
+        
+        for (long long c = s_cycle; c < e_cycle; ++c) {
+            Fraction current(c * tc, 1);
+            for (auto n : pat->list) {
+                double w = 1.0;
+                auto elem = std::dynamic_pointer_cast<ElementStub>(n);
+                if (elem) w = elem->weight;
+                
+                Fraction step((long long)std::round(w), 1);
+                Arc item_arc { current, current + step };
+                
+                if (item_arc.end > arc.start && item_arc.start < arc.end) {
+                    auto evs = eval_node(n, item_arc);
+                    res.insert(res.end(), evs.begin(), evs.end());
+                }
+                current = current + step;
+            }
         }
     } else if (pat->alignment == "stack") {
         for (auto n : pat->list) {
@@ -289,13 +319,21 @@ std::vector<Event> eval_pattern(std::shared_ptr<PatternStub> pat, Arc arc) {
             res.insert(res.end(), evs.begin(), evs.end());
         }
     } else if (pat->alignment == "rand") {
-        if (!pat->list.empty()) {
-            long long cycle = arc.start.n / arc.start.d;
-            double r = get_rand(pat->seed, Fraction(cycle, 1));
-            int chosen_idx = (int)(r * pat->list.size());
-            if (chosen_idx >= (int)pat->list.size()) chosen_idx = pat->list.size() - 1;
-            auto evs = eval_node(pat->list[chosen_idx], arc);
-            res.insert(res.end(), evs.begin(), evs.end());
+        long long s_cycle = (long long)std::floor((double)arc.start.n / arc.start.d - 0.000001);
+        long long e_cycle = (long long)std::ceil((double)arc.end.n / arc.end.d + 0.000001);
+        
+        for (long long c = s_cycle; c < e_cycle; ++c) {
+            if (!pat->list.empty()) {
+                double r = get_rand(pat->seed, Fraction(c, 1));
+                int chosen_idx = (int)(r * pat->list.size());
+                if (chosen_idx >= (int)pat->list.size()) chosen_idx = pat->list.size() - 1;
+                
+                Arc cycle_arc { Fraction(c, 1), Fraction(c + 1, 1) };
+                if (cycle_arc.end > arc.start && cycle_arc.start < arc.end) {
+                    auto evs = eval_node(pat->list[chosen_idx], cycle_arc);
+                    res.insert(res.end(), evs.begin(), evs.end());
+                }
+            }
         }
     } else if (pat->alignment == "polymeter") {
         auto get_ast_weight = [](auto& self, ASTNodePtr node) -> double {
@@ -367,6 +405,10 @@ std::vector<Event> evaluate(ASTNodePtr root, long long cycle) {
     return events;
 }
 
+std::vector<Event> evaluate(ASTNodePtr root, Arc arc) {
+    return eval_node(root, arc);
+}
+
 // Forward declarations from generated flex/bison code
 extern int yyparse();
 struct yy_buffer_state;
@@ -410,6 +452,17 @@ std::string parse_string(const std::string& input, long long cycle) {
     auto ast = run_parser(input);
     if (!ast) return "";
     auto events = evaluate(ast, cycle);
+    root = nullptr;
+    return format_events(events);
+}
+
+std::string parse_string(const std::string& input, double start, double end) {
+    auto ast = run_parser(input);
+    if (!ast) return "";
+    Arc arc;
+    arc.start = Fraction((long long)std::round(start * 1000000.0), 1000000);
+    arc.end = Fraction((long long)std::round(end * 1000000.0), 1000000);
+    auto events = evaluate(ast, arc);
     root = nullptr;
     return format_events(events);
 }

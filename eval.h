@@ -27,6 +27,18 @@ struct Fraction {
     bool operator==(const Fraction& o) const {
         return n == o.n && d == o.d;
     }
+    bool operator<(const Fraction& o) const {
+        return n * o.d < o.n * d;
+    }
+    bool operator>(const Fraction& o) const {
+        return o < *this;
+    }
+    bool operator<=(const Fraction& o) const {
+        return !(*this > o);
+    }
+    bool operator>=(const Fraction& o) const {
+        return !(*this < o);
+    }
 };
 
 struct Arc {
@@ -42,5 +54,7 @@ struct Event {
 
 std::vector<Event> evaluate(ASTNodePtr root);
 std::vector<Event> evaluate(ASTNodePtr root, long long cycle);
+std::vector<Event> evaluate(ASTNodePtr root, Arc arc);
 std::string parse_string(const std::string& input);
 std::string parse_string(const std::string& input, long long cycle);
+std::string parse_string(const std::string& input, double start, double end);

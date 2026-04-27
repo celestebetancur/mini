@@ -15,6 +15,7 @@ CK_DLL_DTOR(mini_dtor);
 // parse methods
 CK_DLL_MFUN(mini_parse);
 CK_DLL_MFUN(mini_parse_cycle);
+CK_DLL_MFUN(mini_parse_arc);
 
 // for chugins extending UGen, this is mono synthesis function for 1 sample
 CK_DLL_TICK(mini_tick);
@@ -31,8 +32,8 @@ public:
   // parse a mini-notation string and return formatted event list
   std::string parse(const std::string &input) { return parse_string(input); }
 
-  // parse with explicit cycle number (for alternation <> support)
-  std::string parse(const std::string &input, long long cycle) { return parse_string(input, cycle); }
+  // parse with explicit arc (for arbitrary time windows)
+  std::string parse(const std::string &input, double start, double end) { return parse_string(input, start, end); }
 
 private:
   // instance data
@@ -82,10 +83,11 @@ CK_DLL_QUERY(mini) {
   QUERY->add_mfun(QUERY, mini_parse, "string", "parse");
   QUERY->add_arg(QUERY, "string", "input");
 
-  // parse with cycle: takes a string and int cycle, returns a string
-  QUERY->add_mfun(QUERY, mini_parse_cycle, "string", "parse");
+  // parse with arc: takes a string and start/end floats, returns a string
+  QUERY->add_mfun(QUERY, mini_parse_arc, "string", "parse");
   QUERY->add_arg(QUERY, "string", "input");
-  QUERY->add_arg(QUERY, "int", "cycle");
+  QUERY->add_arg(QUERY, "float", "start");
+  QUERY->add_arg(QUERY, "float", "end");
 
   // this reserves a variable in the ChucK internal class to store
   // referene to the c++ class we defined above
@@ -139,15 +141,16 @@ CK_DLL_MFUN(mini_parse) {
   RETURN->v_string = API->object->create_string(VM, result.c_str(), false);
 }
 
-// implementation for cycle-aware parse method
-CK_DLL_MFUN(mini_parse_cycle) {
+// implementation for arc-aware parse method
+CK_DLL_MFUN(mini_parse_arc) {
   mini *m_obj = (mini *)OBJ_MEMBER_INT(SELF, mini_data_offset);
 
   Chuck_String *ck_str = GET_NEXT_STRING(ARGS);
   std::string input = ck_str ? API->object->str(ck_str) : "";
-  t_CKINT cycle = GET_NEXT_INT(ARGS);
+  t_CKFLOAT start = GET_NEXT_FLOAT(ARGS);
+  t_CKFLOAT end = GET_NEXT_FLOAT(ARGS);
 
-  std::string result = m_obj->parse(input, (long long)cycle);
+  std::string result = m_obj->parse(input, (double)start, (double)end);
 
   RETURN->v_string = API->object->create_string(VM, result.c_str(), false);
 }
